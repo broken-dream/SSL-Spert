@@ -1,0 +1,7 @@
+/.idea/
+/__pycache__/
+/spret/__pycache__/
+/data
+/configs
+*.pyc
+*.log
