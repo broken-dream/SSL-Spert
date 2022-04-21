@@ -264,7 +264,7 @@ class Evaluator:
     def _get_row(self, data, label):
         row = [label]
         for i in range(len(data) - 1):
-            row.append("%.2f" % (data[i] * 100))
+            row.append("%.5f" % (data[i] * 100))
         row.append(data[3])
         return tuple(row)
 

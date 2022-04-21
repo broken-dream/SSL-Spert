@@ -21,6 +21,8 @@ from spert.loss import SpERTLoss, Loss
 from tqdm import tqdm
 from spert.trainer import BaseTrainer
 
+from spert import balancing
+
 import json
 
 SCRIPT_PATH = os.path.dirname(os.path.realpath(__file__))
@@ -44,10 +46,15 @@ class SpERTTrainer(BaseTrainer):
             "re+":0
         }
         self.best_epoch = 0
+        self.global_iteration = 0
 
     def train(self, train_path: str, valid_path: str, types_path: str, unlabeled_path: str, input_reader_cls: Type[BaseInputReader]):
+        # refresh predictions file
         with open(self._args.unlabeled_predictions_path, 'w+') as predictions_file:
             print("", end="", file=predictions_file)
+        
+        # for balancing
+        ner_prob, rel_prob = balancing.get_prob(self._args.train_path, self._args.types_path)
 
         args = self._args
         train_label, valid_label = 'train', 'valid'
@@ -65,15 +72,28 @@ class SpERTTrainer(BaseTrainer):
                                         args.neg_relation_count, args.max_span_size, self._logger)
         train_dataset = input_reader.read(train_path, train_label)
         validation_dataset = input_reader.read(valid_path, valid_label)
+        empty_dataset = input_reader.read("/data2/wh/spert/data/empty.json", "empty")
+        all_predictions = []
         self._log_datasets(input_reader)
 
         # read unlabeled datasets
         unlabeled_dataset = input_reader.read(unlabeled_path, unlabeled_label)
-        semi_cnt = int(len(unlabeled_dataset)/(args.epochs - args.semi_epoch))
+        semi_epochs = args.semi_end_epoch - args.semi_epoch
+        semi_cnt = int(len(unlabeled_dataset)/semi_epochs)
 
         train_sample_count = train_dataset.document_count
         updates_epoch = train_sample_count // args.train_batch_size
         updates_total = updates_epoch * args.epochs
+        semi_total = 319.6875
+        if args.semi:
+            # batch num for semi epochs
+            # semi_total = int((semi_cnt / args.train_batch_size) * (semi_epochs+1) * semi_epochs / 2)
+            # batch num for epochs after semi supervised learning
+            semi_total = (semi_cnt / args.train_batch_size) * (semi_epochs+1) * semi_epochs / 2
+            semi_total += (args.epochs - args.semi_end_epoch) * len(unlabeled_dataset) // args.train_batch_size
+            # semi_total = (semi_cnt / args.train_batch_size) * (semi_epochs+1) * semi_epochs / 2
+            print("{}:{}".format(updates_total, semi_total))
+            # updates_total += semi_total * semi_epochs
 
         self._logger.info("Updates per epoch: %s" % updates_epoch)
         self._logger.info("Updates total: %s" % updates_total)
@@ -97,7 +117,7 @@ class SpERTTrainer(BaseTrainer):
         # create scheduler
         scheduler = transformers.get_linear_schedule_with_warmup(optimizer,
                                                                  num_warmup_steps=args.lr_warmup * updates_total,
-                                                                 num_training_steps=updates_total)
+                                                                 num_training_steps=updates_total+semi_total)
         # create loss function
         rel_criterion = torch.nn.BCEWithLogitsLoss(reduction='none')
         entity_criterion = torch.nn.CrossEntropyLoss(reduction='none')
@@ -106,20 +126,23 @@ class SpERTTrainer(BaseTrainer):
         # eval validation set
         if args.init_eval:
             self._eval(model, validation_dataset, input_reader, 0, updates_epoch)
-
+         
         # train
         for epoch in range(args.epochs):
             # train epoch
             self._train_epoch(model, compute_loss, optimizer, train_dataset, updates_epoch, epoch)
 
-            if args.semi and epoch >= args.semi_epoch:
+            if args.semi and epoch >= args.semi_epoch and epoch <args.semi_end_epoch:
                 predictions = self._predict_unlabeled(model, unlabeled_dataset, input_reader, semi_cnt)
+                all_predictions += predictions
+                # predictions = self._predict_unlabeled_balancing(model, unlabeled_dataset, input_reader, semi_cnt, ner_prob, rel_prob)
                 print("unlabeled data for train:{}".format(len(predictions)))
                 if len(predictions) > 0: 
                     # predictions_dataset = Dataset(train_label, input_reader._relation_types, input_reader._entity_types, input_reader._neg_entity_count,
                     #                       input_reader._neg_rel_count, input_reader._max_span_size)
                     for doc in predictions:
                         input_reader._parse_document(doc, train_dataset)
+                        input_reader._parse_document(doc, empty_dataset)
                     # self._train_epoch(model, compute_loss, optimizer, predictions_dataset, updates_epoch, epoch, True)
                 
 
@@ -147,6 +170,20 @@ class SpERTTrainer(BaseTrainer):
         #                  optimizer=optimizer if self._args.save_optimizer else None, extra=extra,
         #                  include_iteration=False, name='final_model')
 
+        # if args.semi:
+        #     empty_loader = DataLoader(empty_dataset, batch_size=1, shuffle=False, drop_last=False,
+        #                     num_workers=self._args.sampling_processes, collate_fn=sampling.collate_fn_padding)
+        #     data_file = open("/data2/wh/spert/data/datasets/scierc_wo_generic/unlabeled_pred.json", "w+")
+        #     for batch, data in zip(empty_loader, all_predictions):
+        #         print("{}:{}".format("tokens", data["tokens"]), file=data_file)
+        #         print("{}:{}".format("entities", data["entities"]), file=data_file)
+        #         print("{}:{}".format("relations", data["relations"]), file=data_file)
+        #         for k,v in batch.items():
+        #             print("{}:{}".format(k, v.shape), file=data_file)
+        #             print(v,file=data_file)
+        #         print("",file=data_file)
+        #     data_file.close()
+         
         self._logger.info("Logged in: %s" % self._log_path)
         self._logger.info("Saved in: %s" % self._save_path)
         self._close_summary_writer()
@@ -248,12 +285,14 @@ class SpERTTrainer(BaseTrainer):
 
             # logging
             if not train_unlabel:
+                self.global_iteration += self._args.train_batch_size
                 iteration += 1
                 global_iteration = epoch * updates_epoch + iteration
 
-                if global_iteration % self._args.train_log_iter == 0:
-                    self._log_train(optimizer, batch_loss, epoch, iteration, global_iteration, dataset.label)
-        
+                # if global_iteration % self._args.train_log_iter == 0:
+                    # self._log_train(optimizer, batch_loss, epoch, iteration, global_iteration, dataset.label)
+                if self.global_iteration % (3*self._args.train_batch_size) == 0:
+                    self._log_train(optimizer, batch_loss, epoch, iteration, self.global_iteration, dataset.label)
         print("current epoch loss:{}".format(batch_loss))
         return iteration
 
@@ -506,13 +545,90 @@ class SpERTTrainer(BaseTrainer):
         predictions = prediction.store_predictions_semi(dataset.documents, pred_entities, pred_relations, self._args.unlabeled_predictions_path)
         predictions = [item for item in zip(predictions, scores)]
         predictions.sort(key=lambda x:x[1], reverse=True)
-        predictions = [item[0] for item in predictions[:cnt]]
+
+        # filter low confidence instances
+        strong_predictions = []
+        for item in predictions[:cnt]:
+            if item[1] < self._args.semi_ner_filter_threshold:
+                break
+            strong_predictions.append(item[0])
+        predictions = strong_predictions
 
         with open(self._args.unlabeled_predictions_path, 'a+') as predictions_file:
             for item in predictions:
                 print(json.dumps(item), file=predictions_file)
 
-        top_cnt = dataset.remove(cnt)
+        top_cnt = dataset.remove(min(len(predictions),cnt))
+        # filter empty instances
+        available_predict = []
+        for item in predictions:
+            if len(item["entities"]) > 0 :
+                available_predict.append(item)
+
+        return available_predict
+    
+    def _predict_unlabeled_balancing(self, model: torch.nn.Module, dataset: Dataset, input_reader: BaseInputReader, cnt, ner_prob, rel_prob):
+        dataset.switch_mode(Dataset.EVAL_MODE)
+        data_loader = DataLoader(dataset, batch_size=self._args.eval_batch_size, shuffle=False, drop_last=False,
+                                 num_workers=self._args.sampling_processes, collate_fn=sampling.collate_fn_padding)
+
+        pred_entities = []
+        pred_relations = []
+
+        with torch.no_grad():
+            model.eval()
+
+            # iterate batches
+            doc_id = 0
+            scores = []
+            total = math.ceil(dataset.document_count / self._args.eval_batch_size)
+            for batch in tqdm(data_loader, total=total, desc='Predict'):
+                # move batch to selected device
+                batch = util.to_device(batch, self._device)
+                # for k in batch:
+                #     print("{}:{}".format(k, batch[k].shape))
+                # print("------------------")
+
+                # run model (forward pass)
+                result = model(encodings=batch['encodings'], context_masks=batch['context_masks'],
+                               entity_masks=batch['entity_masks'], entity_sizes=batch['entity_sizes'],
+                               entity_spans=batch['entity_spans'], entity_sample_masks=batch['entity_sample_masks'],
+                               inference=True)
+                entity_clf, rel_clf, rels = result
+                # print(entity_clf[:5])
+                # print(rel_clf[:5])
+
+                # convert predictions
+                predictions = prediction.convert_predictions_semi(entity_clf, rel_clf, rels,
+                                                                  batch, self._args.semi_rel_filter_threshold,
+                                                                  input_reader, ner_filter_threshold=self._args.semi_ner_filter_threshold)
+
+                batch_pred_entities, batch_pred_relations, ave_score = predictions
+                pred_entities.extend(batch_pred_entities)
+                pred_relations.extend(batch_pred_relations)
+                
+                # for i in range(doc_id, doc_id+self._args.eval_batch_size):
+                #     dataset._documents[i]._ent_score = ave_score[i-doc_id]
+                #     scores.append(ave_score[i-doc_id])
+                dataset._documents[doc_id]._ent_score = ave_score
+                scores.append(ave_score)
+                doc_id += self._args.eval_batch_size
+
+        predictions = prediction.store_predictions_semi(dataset.documents, pred_entities, pred_relations, self._args.unlabeled_predictions_path)
+        for pred, score in zip(predictions, scores):
+            pred["score"] = score
+        balancing.set_sample_weight_ner(predictions, ner_prob)
+        balancing.set_sample_weight_rel(predictions, rel_prob)
+        # predictions = balancing.sample_data_by_rel(predictions)
+        predictions = balancing.sample_data_by_ner(predictions)
+        cnt = min(cnt, len(predictions))
+        # predictions.sort(key=lambda x:x["score"], reverse=True)
+        predictions = predictions[:cnt]
+
+        with open(self._args.unlabeled_predictions_path, 'a+') as predictions_file:
+            for item in predictions:
+                print(json.dumps(item), file=predictions_file)
+
         # filter empty instances
         available_predict = []
         for item in predictions:

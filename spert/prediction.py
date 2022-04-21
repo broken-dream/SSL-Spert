@@ -9,15 +9,18 @@ from spert.input_reader import BaseInputReader
 def convert_predictions_semi(batch_entity_clf: torch.tensor, batch_rel_clf: torch.tensor,
                              batch_rels: torch.tensor, batch: dict, rel_filter_threshold: float,
                             input_reader: BaseInputReader, no_overlapping: bool = False, ner_filter_threshold:float = 0.0):
-        # get maximum activation (index of predicted entity type)
+    # ner threshold filter
+    batch_entity_clf[batch_entity_clf < ner_filter_threshold] = 0
+    
+    # get maximum activation (index of predicted entity type)
     batch_entity_types = batch_entity_clf.argmax(dim=-1)
+
     max_index = batch_entity_clf.argmax(dim=-1)
     max_value, max_index = batch_entity_clf.max(dim=-1)
     # apply entity sample mask
     batch_entity_types *= batch['entity_sample_masks'].long()
     # print(batch['entity_sample_masks'].long())
     # remove entity with low probility
-    # batch_entity_types[batch_entity_types < ner_filter_threshold] = 0
 
     # for sort
     max_index[max_index != 0] = 1
