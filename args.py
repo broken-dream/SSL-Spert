@@ -88,11 +88,13 @@ def train_argparser():
     arg_parser.add_argument('--unlabeled_path', type=str, help="unlabeled data path")
     arg_parser.add_argument('--semi_ner_filter_threshold', type=float, default=0.0, help="semi supervised filter entity threshold")
     arg_parser.add_argument('--semi_rel_filter_threshold', type=float, default=0.0, help="semi supervised filter relations threshold")
-    arg_parser.add_argument('--semi_epoch', type=int, default=2, help="start epoch for semi supervised training")
+    arg_parser.add_argument('--semi_epoch', type=int, default=15, help="start epoch for semi supervised training")
+    arg_parser.add_argument('--semi_end_epoch', type=int, default=25, help="start epoch for semi supervised training")
     arg_parser.add_argument('--unlabeled_predictions_path', type=str, help="Path to store predictions")
     arg_parser.add_argument('--semi', action='store_true', default=False,
                         help="whther use semi-supervised_training")
     arg_parser.add_argument('--unlabeled_ratio', type=float, default=0.05, help="unlabeled data path")
+
 
     _add_common_args(arg_parser)
     _add_logging_args(arg_parser)
