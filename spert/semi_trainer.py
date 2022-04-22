@@ -133,9 +133,9 @@ class SpERTTrainer(BaseTrainer):
             self._train_epoch(model, compute_loss, optimizer, train_dataset, updates_epoch, epoch)
 
             if args.semi and epoch >= args.semi_epoch and epoch <args.semi_end_epoch:
-                predictions = self._predict_unlabeled(model, unlabeled_dataset, input_reader, semi_cnt)
+                # predictions = self._predict_unlabeled(model, unlabeled_dataset, input_reader, semi_cnt)
+                predictions = self._predict_unlabeled_balancing(model, unlabeled_dataset, input_reader, semi_cnt, ner_prob, rel_prob)
                 all_predictions += predictions
-                # predictions = self._predict_unlabeled_balancing(model, unlabeled_dataset, input_reader, semi_cnt, ner_prob, rel_prob)
                 print("unlabeled data for train:{}".format(len(predictions)))
                 if len(predictions) > 0: 
                     # predictions_dataset = Dataset(train_label, input_reader._relation_types, input_reader._entity_types, input_reader._neg_entity_count,

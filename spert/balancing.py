@@ -59,7 +59,7 @@ def split_by_ner(data, prob):
         item["sig_ner"] = "no_type"
         for ner in item["entities"]:
             if prob[ner["type"]] > item["ner_prob"]:
-                item["ner_prob"] = prob[ner["type"]
+                item["ner_prob"] = prob[ner["type"]]
                 item["sig_ner"] = ner["type"]
         if item["sig_ner"] != "no_type":
             res[item["sig_ner"]].append(item)
@@ -76,7 +76,7 @@ def split_by_rel(data, prob):
         item["sig_rel"] = "no_type"
         for rel in item["relations"]:
             if prob[rel["type"]] > item["rel_prob"]:
-                item["rel_prob"] = prob[rel["type"]
+                item["rel_prob"] = prob[rel["type"]]
                 item["sig_rel"] = rel["type"]
         if item["sig_rel"] != "no_type":
             res[item["sig_rel"]].append(item)
