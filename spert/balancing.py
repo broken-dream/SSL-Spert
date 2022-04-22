@@ -48,6 +48,41 @@ def set_sample_weight_rel(data, prob):
             max_prob = max(max_prob, prob[rel["type"]])
         item["rel_prob"] = max_prob
 
+def split_by_ner(data, prob):
+    res = dict()
+    for k in prob:
+        res[k] = list()
+
+    for item in data:
+        max_prob = 0
+        item["ner_prob"] = 0
+        item["sig_ner"] = "no_type"
+        for ner in item["entities"]:
+            if prob[ner["type"]] > item["ner_prob"]:
+                item["ner_prob"] = prob[ner["type"]
+                item["sig_ner"] = ner["type"]
+        if item["sig_ner"] != "no_type":
+            res[item["sig_ner"]].append(item)
+    
+    return res
+
+def split_by_rel(data, prob):
+    res = dict()
+    for k in prob:
+        res[k] = list()
+
+    for item in data:
+        item["rel_prob"] = 0
+        item["sig_rel"] = "no_type"
+        for rel in item["relations"]:
+            if prob[rel["type"]] > item["rel_prob"]:
+                item["rel_prob"] = prob[rel["type"]
+                item["sig_rel"] = rel["type"]
+        if item["sig_rel"] != "no_type":
+            res[item["sig_rel"]].append(item)
+    
+    return res
+
 def sample_data_by_ner(data):
     res = []
     for item in data:
@@ -62,4 +97,11 @@ def sample_data_by_rel(data):
         prob = random.random()
         if prob < item["rel_prob"]:
             res.append(item)
+    return res
+
+def sample_data_crest(data, prob, alpha):
+    res = []
+    for k,v in data.items():
+        cnt = len(v) * pow(prob[k], 1/alpha)
+        res += v[:cnt]
     return res

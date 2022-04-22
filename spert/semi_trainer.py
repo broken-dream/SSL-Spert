@@ -72,7 +72,7 @@ class SpERTTrainer(BaseTrainer):
                                         args.neg_relation_count, args.max_span_size, self._logger)
         train_dataset = input_reader.read(train_path, train_label)
         validation_dataset = input_reader.read(valid_path, valid_label)
-        empty_dataset = input_reader.read("/data2/wh/spert/data/empty.json", "empty")
+        # empty_dataset = input_reader.read("/data2/wh/spert/data/empty.json", "empty")
         all_predictions = []
         self._log_datasets(input_reader)
 
@@ -142,7 +142,7 @@ class SpERTTrainer(BaseTrainer):
                     #                       input_reader._neg_rel_count, input_reader._max_span_size)
                     for doc in predictions:
                         input_reader._parse_document(doc, train_dataset)
-                        input_reader._parse_document(doc, empty_dataset)
+                        # input_reader._parse_document(doc, empty_dataset)
                     # self._train_epoch(model, compute_loss, optimizer, predictions_dataset, updates_epoch, epoch, True)
                 
 
@@ -616,11 +616,11 @@ class SpERTTrainer(BaseTrainer):
 
         predictions = prediction.store_predictions_semi(dataset.documents, pred_entities, pred_relations, self._args.unlabeled_predictions_path)
         for pred, score in zip(predictions, scores):
-            pred["score"] = score
+            pred["ner_score"] = score
         balancing.set_sample_weight_ner(predictions, ner_prob)
         balancing.set_sample_weight_rel(predictions, rel_prob)
-        # predictions = balancing.sample_data_by_rel(predictions)
-        predictions = balancing.sample_data_by_ner(predictions)
+        predictions = balancing.sample_data_by_rel(predictions)
+        # predictions = balancing.sample_data_by_ner(predictions)
         cnt = min(cnt, len(predictions))
         # predictions.sort(key=lambda x:x["score"], reverse=True)
         predictions = predictions[:cnt]

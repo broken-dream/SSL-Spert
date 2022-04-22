@@ -15,19 +15,19 @@ def convert_predictions_semi(batch_entity_clf: torch.tensor, batch_rel_clf: torc
     # get maximum activation (index of predicted entity type)
     batch_entity_types = batch_entity_clf.argmax(dim=-1)
 
-    max_index = batch_entity_clf.argmax(dim=-1)
-    max_value, max_index = batch_entity_clf.max(dim=-1)
+    max_ner_index = batch_entity_clf.argmax(dim=-1)
+    max_ner_value, max_ner_index = batch_entity_clf.max(dim=-1)
     # apply entity sample mask
     batch_entity_types *= batch['entity_sample_masks'].long()
     # print(batch['entity_sample_masks'].long())
     # remove entity with low probility
 
     # for sort
-    max_index[max_index != 0] = 1
-    ent_num = max_index.long().sum(dim=-1) # B*ent num
+    max_ner_index[max_ner_index != 0] = 1
+    ent_num = max_ner_index.long().sum(dim=-1) # B*ent num
     # print(ent_num)
-    max_value *= max_index.long()
-    ave_score = (max_value.sum(dim=-1) / ent_num).cpu().item() if ent_num != 0 else 0
+    max_ner_value *= max_ner_index.long()
+    ave_score = (max_ner_value.sum(dim=-1) / ent_num).cpu().item() if ent_num != 0 else 0
     # print(ave_score)
 
     # apply threshold to relations

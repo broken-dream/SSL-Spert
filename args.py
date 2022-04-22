@@ -94,6 +94,7 @@ def train_argparser():
     arg_parser.add_argument('--semi', action='store_true', default=False,
                         help="whther use semi-supervised_training")
     arg_parser.add_argument('--unlabeled_ratio', type=float, default=0.05, help="unlabeled data path")
+    arg_parser.add_argument('--alpha', type=int, default=3, help="alpha for crest")
 
 
     _add_common_args(arg_parser)
