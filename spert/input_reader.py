@@ -10,6 +10,8 @@ from spert import util
 from spert.entities import Dataset, EntityType, RelationType, Entity, Relation, Document
 from spert.opt import spacy
 
+import random
+import copy
 
 class BaseInputReader(ABC):
     def __init__(self, types_path: str, tokenizer: BertTokenizer, neg_entity_count: int = None,
@@ -110,6 +112,137 @@ class BaseInputReader(ABC):
     def __repr__(self):
         return self.__str__()
 
+
+class AugInputReader(BaseInputReader):
+    def __init__(self, types_path: str, tokenizer: BertTokenizer, neg_entity_count: int = None,
+                 neg_rel_count: int = None, max_span_size: int = None, logger: Logger = None, augmentor=None):
+        super().__init__(types_path, tokenizer, neg_entity_count, neg_rel_count, max_span_size, logger)
+        self._init_data = dict()
+        self.augmentor = augmentor
+        self.aug_map = {
+            0: augmentor.replace
+        }
+
+    def read(self, dataset_path, dataset_label):
+        documents = json.load(open(dataset_path))
+
+        # add ban ids for augmentation
+        for doc in documents:
+            ban_ids = []
+            for ner in doc["entities"]:
+                for i in range(ner["start"], ner["end"]):
+                    ban_ids.append(i)
+            doc["ban_ids"] = ban_ids
+        
+        self._init_data[dataset_label] = documents
+        # self._datasets[dataset_label] = dataset
+    
+    def create_documents(self, dataset_label, documents):
+
+        # add ban ids for augmentation
+        for doc in documents:
+            ban_ids = []
+            for ner in doc["entities"]:
+                for i in range(ner["start"], ner["end"]):
+                    ban_ids.append(i)
+            doc["ban_ids"] = ban_ids
+
+        self._init_data[dataset_label] = documents
+        
+
+    def gen_dataset(self, dataset_label, aug=False):
+        dataset = Dataset(dataset_label, self._relation_types, self._entity_types, self._neg_entity_count,
+                          self._neg_rel_count, self._max_span_size)
+        init_data = copy.deepcopy(self._init_data[dataset_label])
+
+        if aug:
+            for item in init_data:
+                self.augmentor.augment(item)
+        
+        if dataset_label == "unlabeled":
+            self._parse_unlabeled_dataset(init_data, dataset)
+        else:
+            self._parse_dataset(init_data, dataset)
+        
+        return dataset
+    
+
+    def _parse_dataset(self, documents, dataset):
+        for document in tqdm(documents, desc="Parse dataset '%s'" % dataset.label):
+            self._parse_document(document, dataset)
+
+    def _parse_document(self, doc, dataset) -> Document:
+        jtokens = doc['tokens']
+        jrelations = doc['relations']
+        jentities = doc['entities']
+
+        # parse tokens
+        doc_tokens, doc_encoding = _parse_tokens(jtokens, dataset, self._tokenizer)
+
+        # parse entity mentions
+        entities = self._parse_entities(jentities, doc_tokens, dataset)
+
+        # parse relations
+        relations = self._parse_relations(jrelations, entities, dataset)
+
+        # create document
+        document = dataset.create_document(doc_tokens, entities, relations, doc_encoding)
+
+        return document
+
+    def _parse_entities(self, jentities, doc_tokens, dataset) -> List[Entity]:
+        entities = []
+
+        for entity_idx, jentity in enumerate(jentities):
+            entity_type = self._entity_types[jentity['type']]
+            start, end = jentity['start'], jentity['end']
+
+            # create entity mention
+            tokens = doc_tokens[start:end]
+            phrase = " ".join([t.phrase for t in tokens])
+            entity = dataset.create_entity(entity_type, tokens, phrase)
+            entities.append(entity)
+
+        return entities
+
+    def _parse_relations(self, jrelations, entities, dataset) -> List[Relation]:
+        relations = []
+
+        for jrelation in jrelations:
+            relation_type = self._relation_types[jrelation['type']]
+
+            head_idx = jrelation['head']
+            tail_idx = jrelation['tail']
+
+            # create relation
+            head = entities[head_idx]
+            tail = entities[tail_idx]
+
+            reverse = int(tail.tokens[0].index) < int(head.tokens[0].index)
+
+            # for symmetric relations: head occurs before tail in sentence
+            if relation_type.symmetric and reverse:
+                head, tail = util.swap(head, tail)
+
+            relation = dataset.create_relation(relation_type, head_entity=head, tail_entity=tail, reverse=reverse)
+            relations.append(relation)
+
+        return relations
+
+    def _parse_unlabeled_dataset(self, documents, dataset):
+        for document in tqdm(documents, desc="Parse dataset '%s'" % dataset.label):
+            self._parse_unlabeled_document(document, dataset)
+
+    def _parse_unlabeled_document(self, document, dataset):
+        jtokens = document['tokens']
+
+        # parse tokens
+        doc_tokens, doc_encoding = _parse_tokens(jtokens, dataset, self._tokenizer)
+
+        # create document
+        document = dataset.create_document(doc_tokens, [], [], doc_encoding)
+
+        return document
 
 class JsonInputReader(BaseInputReader):
     def __init__(self, types_path: str, tokenizer: BertTokenizer, neg_entity_count: int = None,

@@ -1,7 +1,6 @@
 from collections import OrderedDict
 from typing import List
 from torch.utils.data import Dataset as TorchDataset
-
 from spert import sampling
 
 
@@ -271,6 +270,7 @@ class Document:
         self._encoding = encoding
 
         self._ent_score = 0
+        self._rel_score = 0
 
     @property
     def doc_id(self):
@@ -447,3 +447,47 @@ class Dataset(TorchDataset):
     @property
     def relation_count(self):
         return len(self._relations)
+
+class TwoStreamDataset(TorchDataset):
+    def __init__(self, weak_dataset, strong_dataset):
+        self.weak_dataset = weak_dataset
+        self.strong_dataset = strong_dataset
+    
+    def __len__(self):
+        return len(self.weak_dataset)
+    
+    def __getitem__(self, idx):
+        weak_doc = self.weak_dataset._documents[idx]
+        strong_doc = self.strong_dataset._documents[idx]
+        weak_doc, strong_doc = sampling.two_stream_create_train_sample(weak_doc, strong_doc, 
+                                                                       self.weak_dataset._neg_entity_count, self.weak_dataset._neg_rel_count,
+                                                                       self.weak_dataset._max_span_size, len(self.weak_dataset._rel_types))
+        return (weak_doc, strong_doc)
+    
+    def switch_mode(self, mode):
+        self.weak_dataset.switch_mode(mode)
+        self.strong_dataset.switch_mode(mode)
+    
+    @property
+    def label(self):
+        return self.weak_dataset._label
+
+    @property
+    def document_count(self):
+        return len(self.weak_dataset)
+
+    @property
+    def entities(self):
+        return list(self.weak_dataset._entities.values())
+
+    @property
+    def relations(self):
+        return list(self.weak_dataset._relations.values())
+
+    @property
+    def entity_count(self):
+        return len(self.weak_dataset._entities)
+
+    @property
+    def relation_count(self):
+        return len(self.weak_dataset._relations)

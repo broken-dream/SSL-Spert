@@ -91,11 +91,29 @@ def train_argparser():
     arg_parser.add_argument('--semi_epoch', type=int, default=15, help="start epoch for semi supervised training")
     arg_parser.add_argument('--semi_end_epoch', type=int, default=25, help="start epoch for semi supervised training")
     arg_parser.add_argument('--unlabeled_predictions_path', type=str, help="Path to store predictions")
-    arg_parser.add_argument('--semi', action='store_true', default=False,
-                        help="whther use semi-supervised_training")
+    arg_parser.add_argument('--semi', action='store_true', default=False, help="whether use semi-supervised_training")
     arg_parser.add_argument('--unlabeled_ratio', type=float, default=0.05, help="unlabeled data path")
     arg_parser.add_argument('--alpha', type=int, default=3, help="alpha for crest")
+    arg_parser.add_argument('--unlabeled_type', type=str, default="default", 
+                            help="rel means balancing by rel, so does ner. ner_rel means both")
+    arg_parser.add_argument('--semi_cnt_control', action='store_true', default=False,
+                            help="whether ")
+    arg_parser.add_argument('--sort_state', type=str, default="ner", help="sort pseudo label by ner score or rel score")        
 
+    # mean-teacher
+    arg_parser.add_argument('--ema_decay', default=0.999, type=float, metavar='ALPHA',
+                             help='ema variable decay rate (default: 0.999)')
+    arg_parser.add_argument('--consistency', default=None, type=float, metavar='WEIGHT',
+                            help='use consistency loss with given weight (default: None)')
+    arg_parser.add_argument('--consistency_type', default="mse", type=str, metavar='TYPE',
+                            choices=['mse', 'kl'],help='consistency loss type to use')
+    arg_parser.add_argument('--consistency_rampup', default=30, type=int, metavar='EPOCHS',
+                            help='length of the consistency loss ramp-up')
+    arg_parser.add_argument('--logit_distance_cost', default=-1, type=float, metavar='WEIGHT',
+                            help='let the student model have two outputs and use an MSE loss between the logits with the given weight (default: only have one output)')
+
+    # fix match
+    arg_parser.add_argument('--fix', action='store_true', default=False, help="whether use fix match")
 
     _add_common_args(arg_parser)
     _add_logging_args(arg_parser)

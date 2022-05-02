@@ -27,11 +27,17 @@ def convert_predictions_semi(batch_entity_clf: torch.tensor, batch_rel_clf: torc
     ent_num = max_ner_index.long().sum(dim=-1) # B*ent num
     # print(ent_num)
     max_ner_value *= max_ner_index.long()
-    ave_score = (max_ner_value.sum(dim=-1) / ent_num).cpu().item() if ent_num != 0 else 0
+    ave_ner_score = (max_ner_value.sum(dim=-1) / ent_num).cpu().item() if ent_num != 0 else 0
     # print(ave_score)
 
     # apply threshold to relations
     batch_rel_clf[batch_rel_clf < rel_filter_threshold] = 0
+
+    # calculate rel score
+    max_rel_value, max_rel_index = batch_rel_clf.max(dim=-1)
+    max_rel_index[max_rel_index != 0] = 1
+    rel_num = max_rel_index.long().sum(dim=-1)
+    ave_rel_score = (max_rel_value.sum(dim=-1) / rel_num).cpu().item() if rel_num != 0 else 0
 
     batch_pred_entities = []
     batch_pred_relations = []
@@ -63,7 +69,7 @@ def convert_predictions_semi(batch_entity_clf: torch.tensor, batch_rel_clf: torc
     #     print(item)
     # for item in batch_pred_relations:
     #     print(item)
-    return batch_pred_entities, batch_pred_relations, ave_score
+    return batch_pred_entities, batch_pred_relations, ave_ner_score, ave_rel_score
 def convert_predictions(batch_entity_clf: torch.tensor, batch_rel_clf: torch.tensor,
                         batch_rels: torch.tensor, batch: dict, rel_filter_threshold: float,
                         input_reader: BaseInputReader, no_overlapping: bool = False):

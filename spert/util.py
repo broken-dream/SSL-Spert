@@ -223,3 +223,29 @@ def check_version(config, model_class, model_path):
                    % (model_class.VERSION, loaded_version))
             msg += "Use the code matching your version or train a new model."
             raise Exception(msg)
+
+def cmp_ner(a, b):
+    if abs(a["ner_score"]-b["ner_score"]) < 1e-7:
+        if abs(a["rel_score"]-b["rel_score"]) < 1e-7:
+            return 0
+        elif a["rel_score"] < b["rel_score"]:
+            return -1
+        else:
+            return 1
+    elif a["ner_score"] < b["ner_score"]:
+        return -1
+    elif a["ner_score"] > b["ner_score"]:
+        return 1
+
+def cmp_rel(a, b):
+    if abs(a["rel_score"]-b["rel_score"]) < 1e-7:
+        if abs(a["ner_score"]-b["ner_score"]) < 1e-7:
+            return 0
+        elif a["ner_score"] < b["ner_score"]:
+            return -1
+        else:
+            return 1
+    elif a["rel_score"] < b["rel_score"]:
+        return -1
+    elif a["rel_score"] > b["rel_score"]:
+        return 1
