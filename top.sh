@@ -1,0 +1,1 @@
+./tune_ner_th.sh 0 0 5

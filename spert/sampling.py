@@ -298,8 +298,8 @@ def two_stream_create_train_sample(doc_weak, doc_strong, neg_entity_count: int, 
         doc_strong["ent_gold_masks"] = torch.cat((torch.ones([ent_num], dtype=torch.bool),
                                                   torch.zeros([ent_mask_num-ent_num], dtype=torch.bool)))
     else:
-        doc_weak["ent_gold_masks"] = torch.zeros([1], dtype=torch.bool)
-        doc_strong["ent_gold_masks"] = torch.zeros([1], dtype=torch.bool)
+        doc_weak["ent_gold_masks"] = torch.zeros([ent_mask_num], dtype=torch.bool)
+        doc_strong["ent_gold_masks"] = torch.zeros([ent_mask_num], dtype=torch.bool)
     
     if rel_num != 0:
         doc_weak["rel_gold_masks"] = torch.cat((torch.ones([rel_num], dtype=torch.bool),

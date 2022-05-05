@@ -102,7 +102,7 @@ class SpERTTrainer(BaseTrainer):
         # load model
         model = self._load_model(input_reader)
         if args.transfer:
-            model.load_src(args.src_path, start_layer=10)
+            model.load_src(args.src_path, start_layer=args.start_layer, end_layer=args.end_layer)
 
         # SpERT is currently optimized on a single GPU and not thoroughly tested in a multi GPU setup
         # If you still want to train SpERT on multiple GPUs, uncomment the following lines
@@ -195,6 +195,12 @@ class SpERTTrainer(BaseTrainer):
         for k in self.best_metric:
             print("best {} : {}".format(k, self.best_metric[k]))
         print("best epoch:{}".format(self.best_epoch))
+        print("{}:{}".format(updates_total, semi_total))
+        out_file = open(self._save_path + "/result.txt", "w+")
+        for k in self.best_metric:
+            print("best {} : {}".format(k, self.best_metric[k]), file=out_file)
+        print("best epoch:{}".format(self.best_epoch), file=out_file)
+        print("{}:{}".format(updates_total, semi_total), file=out_file)
         print("----------------------------------")
 
     def eval(self, dataset_path: str, types_path: str, input_reader_cls: Type[BaseInputReader]):
@@ -584,7 +590,8 @@ class SpERTTrainer(BaseTrainer):
 
             # iterate batches
             doc_id = 0
-            scores = []
+            ner_scores = []
+            rel_scores = []
             total = math.ceil(dataset.document_count / self._args.eval_batch_size)
             for batch in tqdm(data_loader, total=total, desc='Predict'):
                 # move batch to selected device
@@ -607,20 +614,23 @@ class SpERTTrainer(BaseTrainer):
                                                                   batch, self._args.semi_rel_filter_threshold,
                                                                   input_reader, ner_filter_threshold=self._args.semi_ner_filter_threshold)
 
-                batch_pred_entities, batch_pred_relations, ave_score = predictions
+                batch_pred_entities, batch_pred_relations, ave_ner_score, ave_rel_score = predictions
                 pred_entities.extend(batch_pred_entities)
                 pred_relations.extend(batch_pred_relations)
                 
                 # for i in range(doc_id, doc_id+self._args.eval_batch_size):
                 #     dataset._documents[i]._ent_score = ave_score[i-doc_id]
                 #     scores.append(ave_score[i-doc_id])
-                dataset._documents[doc_id]._ent_score = ave_score
-                scores.append(ave_score)
+                dataset._documents[doc_id]._ent_score = ave_ner_score
+                dataset._documents[doc_id]._rel_score = ave_rel_score
+                ner_scores.append(ave_ner_score)
+                rel_scores.append(ave_rel_score)
                 doc_id += self._args.eval_batch_size
 
         predictions = prediction.store_predictions_semi(dataset.documents, pred_entities, pred_relations, self._args.unlabeled_predictions_path)
-        for pred, score in zip(predictions, scores):
-            pred["ner_score"] = score
+        for pred, ner_score, rel_score in zip(predictions, ner_scores, rel_scores):
+            pred["ner_score"] = ner_score
+            pred["rel_score"] = rel_score
         balancing.set_sample_weight_ner(predictions, ner_prob)
         balancing.set_sample_weight_rel(predictions, rel_prob)
         if unlabeled_type == "rel":

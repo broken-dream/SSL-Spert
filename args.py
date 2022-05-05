@@ -83,6 +83,8 @@ def train_argparser():
     arg_parser.add_argument('--src_path', type=str, help="source domain model")
     arg_parser.add_argument('--transfer', action='store_true', default=False,
                         help="Evaluate the model only after training, not at every epoch")
+    arg_parser.add_argument('--start_layer', type=int, default=11, help="load fine-tuned bert from start layer")
+    arg_parser.add_argument('--end_layer', type=int, default=11, help="source domain model")
 
     # semi-supervised
     arg_parser.add_argument('--unlabeled_path', type=str, help="unlabeled data path")

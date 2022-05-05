@@ -151,22 +151,46 @@ class SpERTTrainer(BaseTrainer):
                     weak_dataset = input_reader.gen_dataset(weak_label)
                     strong_dataset = input_reader.gen_dataset(weak_label, aug=True)
                     two_stream_dataset = TwoStreamDataset(weak_dataset, strong_dataset)
+                    
+                    # for debug
+                    # f = open("/data2/wh/spert/data/datasets/scierc_wo_generic/pseudo_weak1.json", "w+")
+                    # f1 = open("/data2/wh/spert/data/datasets/scierc_wo_generic/pseudo_strong1.json", "w+")
+                    # data_loader = DataLoader(two_stream_dataset, batch_size=self._args.train_batch_size, shuffle=True, drop_last=True,
+                    #                             num_workers=self._args.sampling_processes, collate_fn=sampling.two_stream_collate_fn_padding)
+                    # for b_idx, batch in enumerate(data_loader):
+                    #     for i in range(self._args.train_batch_size):
+                    #         print(b_idx*self._args.train_batch_size+i,file=f)
+                    #         print(input_reader._tokenizer.convert_ids_to_tokens(batch["encodings"][i]), file=f)
+                    #         for k,v in batch.items():
+                    #             print("{}:{}".format(k,v[i]), file=f)
+                    #         print("", file=f)
+                    #         print(b_idx*self._args.train_batch_size+i,file=f1)
+                    #         print(input_reader._tokenizer.convert_ids_to_tokens(batch["encodings"][i+self._args.train_batch_size]), file=f1)
+                    #         for k,v in batch.items():
+                    #             print("{}:{}".format(k,v[i+self._args.train_batch_size]), file=f1)
+                    #         print("", file=f1)
+
                     self._train_fix_epoch(model, fix_loss, optimizer, two_stream_dataset, updates_epoch, epoch, True)
 
-                    # for debug
-                    if epoch == args.semi_end_epoch:
-                        f = open("../data/scierc_wo_generic/pseudo.json", "w+")
-                        data_loader = DataLoader(dataset, batch_size=self._args.train_batch_size, shuffle=True, drop_last=True,
-                                                 num_workers=self._args.sampling_processes, collate_fn=sampling.two_stream_collate_fn_padding)
-                        for i in range(self._args.train_batch_size):
-                            print(input_reader._tokenizer.convert_ids_to_tokens(batch[i]["encodings"]), file=f)
-                            for k,v in batch[i]:
-                                print("{}:{}".format(k,v), file=f)
-                            print("---------------------------------------", file=f)
-                            print(input_reader._tokenizer.convert_ids_to_tokens(batch[i+self._args.train_batch_size]["encodings"]), file=f)
-                            for k,v in batch[i+self._args.train_batch_size]:
-                                print("{}:{}".format(k,v), file=f)
-                            print("", file=f)
+            # for debug
+            # if epoch == args.semi_end_epoch:
+            #     f = open("/data2/wh/spert/data/datasets/scierc_wo_generic/pseudo_weak.json", "w+")
+            #     f1 = open("/data2/wh/spert/data/datasets/scierc_wo_generic/pseudo_strong.json", "w+")
+            #     weak_dataset = input_reader.gen_dataset(train_label)
+            #     strong_dataset = input_reader.gen_dataset(train_label, aug=True)
+            #     two_stream_dataset = TwoStreamDataset(weak_dataset, strong_dataset)
+            #     data_loader = DataLoader(two_stream_dataset, batch_size=self._args.train_batch_size, shuffle=True, drop_last=True,
+            #                                 num_workers=self._args.sampling_processes, collate_fn=sampling.two_stream_collate_fn_padding)
+            #     for batch in data_loader:
+            #         for i in range(self._args.train_batch_size):
+            #             print(input_reader._tokenizer.convert_ids_to_tokens(batch["encodings"][i]), file=f)
+            #             for k,v in batch.items():
+            #                 print("{}:{}".format(k,v[i]), file=f)
+            #             print("", file=f)
+            #             print(input_reader._tokenizer.convert_ids_to_tokens(batch["encodings"][i+self._args.train_batch_size]), file=f1)
+            #             for k,v in batch.items():
+            #                 print("{}:{}".format(k,v[i+self._args.train_batch_size]), file=f1)
+            #             print("", file=f1)
 
                             
 
@@ -316,6 +340,7 @@ class SpERTTrainer(BaseTrainer):
         iteration = 0
         total = dataset.document_count // self._args.train_batch_size
         batch_loss = 0
+        cur = 0
         for batch in tqdm(data_loader, total=total, desc='Train epoch %s' % epoch):
             model.train()
             batch = util.to_device(batch, self._device)
@@ -332,6 +357,9 @@ class SpERTTrainer(BaseTrainer):
             # print("rel god mask shape:{}".format(batch['rel_gold_masks'][:weak_entity_logits.shape[0]].shape))
 
             # compute loss and optimize parameters
+            # print(cur)
+            # cur += self._args.train_batch_size
+            batch_loss = 0
             batch_loss = compute_loss.compute(entity_logits=weak_entity_logits, rel_logits=weak_rel_logits,
                                               strong_entity_logits=strong_entity_logits, strong_rel_logits=strong_rel_logits,
                                               rel_types=batch['rel_types'][:weak_entity_logits.shape[0]], 

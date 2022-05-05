@@ -45,5 +45,6 @@ class WNAugmentor:
             target_word = item["tokens"][replace_id]
         else:
             target_word = random.sample(syns, 1)[0]
+            # print("replace successfully")
 
         item["tokens"][replace_id] = target_word
