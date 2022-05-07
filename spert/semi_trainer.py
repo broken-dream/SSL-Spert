@@ -347,6 +347,11 @@ class SpERTTrainer(BaseTrainer):
 
         global_iteration = epoch * updates_epoch + iteration
         ner_eval, rel_eval, rel_nec_eval = evaluator.compute_scores()
+        out_file = open(self._args.model_path[:-11] + "test_result.txt", "w+")
+        print("ner: {}  {}  {}".format(ner_eval[0], ner_eval[1], ner_eval[2]), file=out_file)
+        print("rel: {}  {}  {}".format(rel_eval[0], rel_eval[1], rel_eval[2]), file=out_file)
+        print("rel+: {}  {}  {}".format(rel_nec_eval[0], rel_nec_eval[1], rel_nec_eval[2]), file=out_file)
+
         self._log_eval(*ner_eval, *rel_eval, *rel_nec_eval,
                        epoch, iteration, global_iteration, dataset.label)
 
