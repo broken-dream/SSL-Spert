@@ -14,18 +14,12 @@ from transformers import BertTokenizer
 from spert import models, prediction
 from spert import sampling
 from spert import util
-from spert.entities import Dataset, TwoStreamDataset
+from spert.entities import Dataset
 from spert.evaluator import Evaluator
 from spert.input_reader import JsonInputReader, BaseInputReader
-from spert.loss import SpERTLoss, Loss, MTLoss
+from spert.loss import SpERTLoss, Loss
 from tqdm import tqdm
 from spert.trainer import BaseTrainer
-
-from spert import balancing
-from spert import mt_utils
-from spert import augmentor
-
-import json
 
 SCRIPT_PATH = os.path.dirname(os.path.realpath(__file__))
 
@@ -35,33 +29,23 @@ class SpERTTrainer(BaseTrainer):
 
     def __init__(self, args: argparse.Namespace):
         super().__init__(args)
-
+        # print("tokenizer path:{}".format(args.tokenizer_path))
+        # print("max span size:{}".format(args.max_span_size))
         # byte-pair encoding
         self._tokenizer = BertTokenizer.from_pretrained(args.tokenizer_path,
                                                         do_lower_case=args.lowercase,
                                                         cache_dir=args.cache_path)
         self.model = None
-
+        self.best_epoch = 0
         self.best_metric = {
             "ner":0,
             "re":0,
             "re+":0
         }
-        self.best_epoch = 0
-        self.global_iteration = 0
 
-    def train(self, train_path: str, valid_path: str, types_path: str, unlabeled_path: str, input_reader_cls: Type[BaseInputReader]):
-        # refresh predictions file
-        with open(self._args.unlabeled_predictions_path, 'w+') as predictions_file:
-            print("", end="", file=predictions_file)
-        
-        ner_prob, rel_prob = balancing.get_prob(self._args.train_path, self._args.types_path)
-
+    def train(self, train_path: str, valid_path: str, types_path: str, input_reader_cls: Type[BaseInputReader]):
         args = self._args
         train_label, valid_label = 'train', 'valid'
-        unlabeled_label = 'unlabeled'
-        weak_label = 'weak'
-        strong_label = 'strong'
 
         self._logger.info("Datasets: %s, %s" % (train_path, valid_path))
         self._logger.info("Model type: %s" % args.model_type)
@@ -71,40 +55,23 @@ class SpERTTrainer(BaseTrainer):
         self._init_eval_logging(valid_label)
 
         # read datasets
-        cur_augmentor = augmentor.WNAugmentor()
         input_reader = input_reader_cls(types_path, self._tokenizer, args.neg_entity_count,
-                                        args.neg_relation_count, args.max_span_size, self._logger, cur_augmentor)
-        input_reader.read(train_path, train_label)
-        input_reader.read(valid_path, valid_label)
-        input_reader.read(unlabeled_path, unlabeled_label)
-        train_dataset = input_reader.gen_dataset(train_label)
-        validation_dataset = input_reader.gen_dataset(valid_label)
-        unlabeled_dataset = input_reader.gen_dataset(unlabeled_label)
-
-        all_predictions = []
+                                        args.neg_relation_count, args.max_span_size, self._logger)
+        train_dataset = input_reader.read(train_path, train_label)
+        validation_dataset = input_reader.read(valid_path, valid_label)
         self._log_datasets(input_reader)
-
-        semi_epochs = args.semi_end_epoch - args.semi_epoch
-        semi_cnt = len(unlabeled_dataset)
 
         train_sample_count = train_dataset.document_count
         updates_epoch = train_sample_count // args.train_batch_size
         updates_total = updates_epoch * args.epochs
-        semi_total = (semi_cnt//args.train_batch_size)*args.epochs
-        # iterations for semi supervised learning per epoch
-        semi_cnt_epoch = semi_cnt // args.train_batch_size
 
         self._logger.info("Updates per epoch: %s" % updates_epoch)
         self._logger.info("Updates total: %s" % updates_total)
 
         # load model
         model = self._load_model(input_reader)
-        ema_model = self._load_model(input_reader)
-        for param in ema_model.parameters():
-                param.detach_()
-        
         if args.transfer:
-            model.load_src(args.src_path, start_layer=10)
+            model.load_src(args.src_path)
 
         # SpERT is currently optimized on a single GPU and not thoroughly tested in a multi GPU setup
         # If you still want to train SpERT on multiple GPUs, uncomment the following lines
@@ -113,8 +80,6 @@ class SpERTTrainer(BaseTrainer):
         #     model = torch.nn.DataParallel(model)
 
         model.to(self._device)
-        ema_model.to(self._device)
-
 
         # create optimizer
         optimizer_params = self._get_optimizer_params(model)
@@ -122,55 +87,23 @@ class SpERTTrainer(BaseTrainer):
         # create scheduler
         scheduler = transformers.get_linear_schedule_with_warmup(optimizer,
                                                                  num_warmup_steps=args.lr_warmup * updates_total,
-                                                                 num_training_steps=updates_total+semi_total)
+                                                                 num_training_steps=updates_total)
         # create loss function
         rel_criterion = torch.nn.BCEWithLogitsLoss(reduction='none')
         entity_criterion = torch.nn.CrossEntropyLoss(reduction='none')
-        consistency_criterion = mt_utils.softmax_kl_loss
         compute_loss = SpERTLoss(rel_criterion, entity_criterion, model, optimizer, scheduler, args.max_grad_norm)
-        mt_loss = MTLoss(rel_criterion, entity_criterion, consistency_criterion, model, optimizer, scheduler, args.max_grad_norm, args)
+
         # eval validation set
         if args.init_eval:
             self._eval(model, validation_dataset, input_reader, 0, updates_epoch)
-        
-        
+
         # train
         for epoch in range(args.epochs):
             # train epoch
-            # train labeled data
-            strong_labeled = input_reader.gen_dataset(train_label, aug=True)
-            two_stream_dataset = TwoStreamDataset(train_dataset, strong_labeled)
-            self._train_mt_epoch(model, ema_model, mt_loss, optimizer, two_stream_dataset, updates_epoch, semi_cnt_epoch, epoch, True)
-
-            #strong_unlabeled = input_reader.gen_dataset(unlabeled_label, aug=True)
-            #two_stream_dataset = TwoStreamDataset(unlabeled_dataset, strong_unlabeled)
-            #self._train_mt_epoch(model, ema_model, mt_loss, optimizer, two_stream_dataset, updates_epoch, semi_cnt_epoch, epoch, False)
-
-            # for debug
-            if epoch == 0:
-                f = open("/data2/wh/spert/data/datasets/scierc_wo_generic/pseudo_weak_mt.json", "w+")
-                f1 = open("/data2/wh/spert/data/datasets/scierc_wo_generic/pseudo_strong_mt.json", "w+")
-                weak_dataset = input_reader.gen_dataset(train_label)
-                strong_dataset = input_reader.gen_dataset(train_label, aug=True)
-                two_stream_dataset = TwoStreamDataset(weak_dataset, strong_dataset)
-                data_loader = DataLoader(two_stream_dataset, batch_size=self._args.train_batch_size, shuffle=True, drop_last=True,
-                                            num_workers=self._args.sampling_processes, collate_fn=sampling.two_stream_collate_fn_padding)
-                for batch in data_loader:
-                    for i in range(self._args.train_batch_size):
-                        print(input_reader._tokenizer.convert_ids_to_tokens(batch["encodings"][i]), file=f)
-                        for k,v in batch.items():
-                            print("{}:{}".format(k,v[i]), file=f)
-                        print("", file=f)
-                        print(input_reader._tokenizer.convert_ids_to_tokens(batch["encodings"][i+self._args.train_batch_size]), file=f1)
-                        for k,v in batch.items():
-                            print("{}:{}".format(k,v[i+self._args.train_batch_size]), file=f1)
-                        print("", file=f1)
-
-                            
+            self._train_epoch(model, compute_loss, optimizer, train_dataset, updates_epoch, epoch)
 
             # eval validation sets
             if not args.final_eval or (epoch == args.epochs - 1):
-                # eval_res = self._eval(ema_model, validation_dataset, input_reader, epoch + 1, updates_epoch)
                 eval_res = self._eval(model, validation_dataset, input_reader, epoch + 1, updates_epoch)
                 eval_ave = (eval_res["ner"] + eval_res["re"] + eval_res["re+"]) / 3
                 best_ave = (self.best_metric["ner"] + self.best_metric["re"] + self.best_metric["re+"]) / 3
@@ -179,20 +112,32 @@ class SpERTTrainer(BaseTrainer):
                     self.best_epoch = epoch
                     extra = dict(epoch=args.epochs, updates_epoch=updates_epoch, epoch_iteration=0)
                     global_iteration = args.epochs * updates_epoch
-                    self._save_model(self._save_path, ema_model, self._tokenizer, global_iteration,
+                    self._save_model(self._save_path, model, self._tokenizer, global_iteration,
                                      optimizer=optimizer if self._args.save_optimizer else None, extra=extra,
                                      include_iteration=False, name='final_model')
                     self.best_epoch = epoch
                     self.best_metric = eval_res
                     print("best checkpoint:{}".format(epoch))
-         
+
+        # save final model
+        extra = dict(epoch=args.epochs, updates_epoch=updates_epoch, epoch_iteration=0)
+        global_iteration = args.epochs * updates_epoch
+        self._save_model(self._save_path, model, self._tokenizer, global_iteration,
+                         optimizer=optimizer if self._args.save_optimizer else None, extra=extra,
+                         include_iteration=False, name='final_model')
+
         self._logger.info("Logged in: %s" % self._log_path)
         self._logger.info("Saved in: %s" % self._save_path)
         self._close_summary_writer()
+
         print("----------------------------------")
         for k in self.best_metric:
             print("best {} : {}".format(k, self.best_metric[k]))
         print("best epoch:{}".format(self.best_epoch))
+        out_file = open(self._save_path + "/result.txt", "w+")
+        for k in self.best_metric:
+            print("best {} : {}".format(k, self.best_metric[k]), file=out_file)
+        print("best epoch:{}".format(self.best_epoch), file=out_file)
         print("----------------------------------")
 
     def eval(self, dataset_path: str, types_path: str, input_reader_cls: Type[BaseInputReader]):
@@ -257,7 +202,7 @@ class SpERTTrainer(BaseTrainer):
         return model
 
     def _train_epoch(self, model: torch.nn.Module, compute_loss: Loss, optimizer: Optimizer, dataset: Dataset,
-                     updates_epoch: int, epoch: int, train_unlabel: bool = False):
+                     updates_epoch: int, epoch: int):
         self._logger.info("Train epoch: %s" % epoch)
 
         # create data loader
@@ -272,7 +217,7 @@ class SpERTTrainer(BaseTrainer):
         for batch in tqdm(data_loader, total=total, desc='Train epoch %s' % epoch):
             model.train()
             batch = util.to_device(batch, self._device)
-            # print(batch["encodings"][0][:15])
+
             # forward step
             entity_logits, rel_logits = model(encodings=batch['encodings'], context_masks=batch['context_masks'],
                                               entity_masks=batch['entity_masks'], entity_sizes=batch['entity_sizes'],
@@ -286,72 +231,14 @@ class SpERTTrainer(BaseTrainer):
 
 
             # logging
-            if not train_unlabel:
-                self.global_iteration += self._args.train_batch_size
-                iteration += 1
-                global_iteration = epoch * updates_epoch + iteration
-
-                # if global_iteration % self._args.train_log_iter == 0:
-                    # self._log_train(optimizer, batch_loss, epoch, iteration, global_iteration, dataset.label)
-                if self.global_iteration % (3*self._args.train_batch_size) == 0:
-                    self._log_train(optimizer, batch_loss, epoch, iteration, self.global_iteration, dataset.label)
-        print("current epoch loss:{}".format(batch_loss))
-        return iteration
-
-    def _train_mt_epoch(self, model: torch.nn.Module, ema_model: torch.nn.Module, compute_loss: Loss, optimizer: Optimizer, dataset: Dataset,
-                        updates_epoch: int, semi_cnt_epoch: int, epoch: int, labeled: bool = True):
-        self._logger.info("Train MT epoch: %s" % epoch)
-
-        # create data loader
-        dataset.switch_mode(Dataset.TRAIN_MODE)
-        data_loader = DataLoader(dataset, batch_size=self._args.train_batch_size, shuffle=True, drop_last=True,
-                                 num_workers=self._args.sampling_processes, collate_fn=sampling.two_stream_collate_fn_padding)
-
-        model.zero_grad()
-
-        iteration = 0
-        total = dataset.document_count // self._args.train_batch_size
-        mini_bsz = self._args.train_batch_size
-        batch_loss = 0
-        cur = 0
-        for batch in tqdm(data_loader, total=total, desc='Train epoch %s' % epoch):
-            model.train()
-            batch = util.to_device(batch, self._device)
-            # for k in batch:
-                # print("{}:{}".format(k, batch[k].shape))
-            # forward step
-            entity_logits, rel_logits = model(encodings=batch['encodings'][:mini_bsz], 
-                                              context_masks=batch['context_masks'][:mini_bsz],
-                                              entity_masks=batch['entity_masks'][:mini_bsz], entity_sizes=batch['entity_sizes'][:mini_bsz],
-                                              relations=batch['rels'][:mini_bsz], rel_masks=batch['rel_masks'][:mini_bsz])
-            ema_entity_logits, ema_rel_logits = ema_model(encodings=batch['encodings'][mini_bsz:], 
-                                                      context_masks=batch['context_masks'][mini_bsz:],
-                                                      entity_masks=batch['entity_masks'][mini_bsz:], entity_sizes=batch['entity_sizes'][mini_bsz:],
-                                                      relations=batch['rels'][mini_bsz:], rel_masks=batch['rel_masks'][mini_bsz:])
-
-            # compute loss and optimize parameters
-            # print(cur)
-            # cur += self._args.train_batch_size
-            batch_loss = 0
-            batch_loss = compute_loss.compute(entity_logits=entity_logits, rel_logits=rel_logits,
-                                              ema_entity_logits=ema_entity_logits, ema_rel_logits=ema_rel_logits,
-                                              rel_types=batch['rel_types'][:entity_logits.shape[0]], 
-                                              entity_types=batch['entity_types'][:entity_logits.shape[0]],
-                                              entity_sample_masks=batch['entity_sample_masks'][:entity_logits.shape[0]],
-                                              rel_sample_masks=batch['rel_sample_masks'][:entity_logits.shape[0]],
-                                              epoch=epoch, labeled=labeled)
-            # print("train_unlabel:{}".format(train_unlabel))
-            # logging
-            self.global_iteration += self._args.train_batch_size
             iteration += 1
-            global_iteration = epoch * (updates_epoch+semi_cnt_epoch) + iteration
-            mt_utils.update_ema_variables(model, ema_model, self._args.ema_decay, global_iteration)
+            global_iteration = epoch * updates_epoch + iteration
 
-            # if global_iteration % self._args.train_log_iter == 0:
-                # self._log_train(optimizer, batch_loss, epoch, iteration, global_iteration, dataset.label)
-            if labeled and self.global_iteration % (3*self._args.train_batch_size) == 0:
-                self._log_train(optimizer, batch_loss, epoch, iteration, self.global_iteration, dataset.label)
+            if global_iteration % self._args.train_log_iter == 0:
+                self._log_train(optimizer, batch_loss, epoch, iteration, global_iteration, dataset.label)
+        
         print("current epoch loss:{}".format(batch_loss))
+
         return iteration
 
     def _eval(self, model: torch.nn.Module, dataset: Dataset, input_reader: BaseInputReader,
@@ -399,7 +286,6 @@ class SpERTTrainer(BaseTrainer):
         print("ner: {}  {}  {}".format(ner_eval[0], ner_eval[1], ner_eval[2]), file=out_file)
         print("rel: {}  {}  {}".format(rel_eval[0], rel_eval[1], rel_eval[2]), file=out_file)
         print("rel+: {}  {}  {}".format(rel_nec_eval[0], rel_nec_eval[1], rel_nec_eval[2]), file=out_file)
-
         self._log_eval(*ner_eval, *rel_eval, *rel_nec_eval,
                        epoch, iteration, global_iteration, dataset.label)
 
@@ -408,16 +294,13 @@ class SpERTTrainer(BaseTrainer):
 
         if self._args.store_examples:
             evaluator.store_examples()
-        # print(ner_eval)
-        # print(rel_eval)
-        # print(rel_nec_eval)
+        
         eval_res = {
             "ner": ner_eval[2],
             "re": rel_eval[2],
             "re+": rel_nec_eval[2]
         }
         return eval_res
-
     def _predict(self, model: torch.nn.Module, dataset: Dataset, input_reader: BaseInputReader):
         # create data loader
         dataset.switch_mode(Dataset.EVAL_MODE)
@@ -451,7 +334,6 @@ class SpERTTrainer(BaseTrainer):
                 batch_pred_entities, batch_pred_relations = predictions
                 pred_entities.extend(batch_pred_entities)
                 pred_relations.extend(batch_pred_relations)
-
         prediction.store_predictions(dataset.documents, pred_entities, pred_relations, self._args.predictions_path)
 
     def _get_optimizer_params(self, model):
@@ -557,226 +439,3 @@ class SpERTTrainer(BaseTrainer):
                                                  'rel_nec_prec_micro', 'rel_nec_rec_micro', 'rel_nec_f1_micro',
                                                  'rel_nec_prec_macro', 'rel_nec_rec_macro', 'rel_nec_f1_macro',
                                                  'epoch', 'iteration', 'global_iteration']})
-
-    def _predict_unlabeled(self, model: torch.nn.Module, dataset: Dataset, input_reader: BaseInputReader, cnt: int):
-        dataset.switch_mode(Dataset.EVAL_MODE)
-        data_loader = DataLoader(dataset, batch_size=self._args.eval_batch_size, shuffle=False, drop_last=False,
-                                 num_workers=self._args.sampling_processes, collate_fn=sampling.collate_fn_padding)
-
-        pred_entities = []
-        pred_relations = []
-
-        with torch.no_grad():
-            model.eval()
-
-            # iterate batches
-            doc_id = 0
-            scores = []
-            total = math.ceil(dataset.document_count / self._args.eval_batch_size)
-            for batch in tqdm(data_loader, total=total, desc='Predict'):
-                # move batch to selected device
-                batch = util.to_device(batch, self._device)
-                # for k in batch:
-                #     print("{}:{}".format(k, batch[k].shape))
-                # print("------------------")
-
-                # run model (forward pass)
-                result = model(encodings=batch['encodings'], context_masks=batch['context_masks'],
-                               entity_masks=batch['entity_masks'], entity_sizes=batch['entity_sizes'],
-                               entity_spans=batch['entity_spans'], entity_sample_masks=batch['entity_sample_masks'],
-                               inference=True)
-                entity_clf, rel_clf, rels = result
-                # print(entity_clf[:5])
-                # print(rel_clf[:5])
-
-                # convert predictions
-                predictions = prediction.convert_predictions_semi(entity_clf, rel_clf, rels,
-                                                                  batch, self._args.semi_rel_filter_threshold,
-                                                                  input_reader, ner_filter_threshold=self._args.semi_ner_filter_threshold)
-
-                batch_pred_entities, batch_pred_relations, ave_score = predictions
-                pred_entities.extend(batch_pred_entities)
-                pred_relations.extend(batch_pred_relations)
-                
-                # for i in range(doc_id, doc_id+self._args.eval_batch_size):
-                #     dataset._documents[i]._ent_score = ave_score[i-doc_id]
-                #     scores.append(ave_score[i-doc_id])
-                dataset._documents[doc_id]._ent_score = ave_score
-                scores.append(ave_score)
-                doc_id += self._args.eval_batch_size
-
-        predictions = prediction.store_predictions_semi(dataset.documents, pred_entities, pred_relations, self._args.unlabeled_predictions_path)
-        predictions = [item for item in zip(predictions, scores)]
-        predictions.sort(key=lambda x:x[1], reverse=True)
-
-        # filter low confidence instances
-        strong_predictions = []
-        for item in predictions[:cnt]:
-            if item[1] < self._args.semi_ner_filter_threshold:
-                break
-            strong_predictions.append(item[0])
-        predictions = strong_predictions
-
-        with open(self._args.unlabeled_predictions_path, 'a+') as predictions_file:
-            for item in predictions:
-                print(json.dumps(item), file=predictions_file)
-
-        top_cnt = dataset.remove(min(len(predictions),cnt))
-        # filter empty instances
-        available_predict = []
-        for item in predictions:
-            if len(item["entities"]) > 0 :
-                available_predict.append(item)
-
-        return available_predict
-    
-    def _predict_unlabeled_balancing(self, model: torch.nn.Module, dataset: Dataset, input_reader: BaseInputReader, cnt, ner_prob, rel_prob, unlabeled_type):
-        dataset.switch_mode(Dataset.EVAL_MODE)
-        data_loader = DataLoader(dataset, batch_size=self._args.eval_batch_size, shuffle=False, drop_last=False,
-                                 num_workers=self._args.sampling_processes, collate_fn=sampling.collate_fn_padding)
-
-        pred_entities = []
-        pred_relations = []
-
-        with torch.no_grad():
-            model.eval()
-
-            # iterate batches
-            doc_id = 0
-            ner_scores = []
-            rel_scores = []
-            total = math.ceil(dataset.document_count / self._args.eval_batch_size)
-            for batch in tqdm(data_loader, total=total, desc='Predict'):
-                # move batch to selected device
-                batch = util.to_device(batch, self._device)
-                # for k in batch:
-                #     print("{}:{}".format(k, batch[k].shape))
-                # print("------------------")
-
-                # run model (forward pass)
-                result = model(encodings=batch['encodings'], context_masks=batch['context_masks'],
-                               entity_masks=batch['entity_masks'], entity_sizes=batch['entity_sizes'],
-                               entity_spans=batch['entity_spans'], entity_sample_masks=batch['entity_sample_masks'],
-                               inference=True)
-                entity_clf, rel_clf, rels = result
-                # print(entity_clf[:5])
-                # print(rel_clf[:5])
-
-                # convert predictions
-                predictions = prediction.convert_predictions_semi(entity_clf, rel_clf, rels,
-                                                                  batch, self._args.semi_rel_filter_threshold,
-                                                                  input_reader, ner_filter_threshold=self._args.semi_ner_filter_threshold)
-
-                batch_pred_entities, batch_pred_relations, ave_ner_score, ave_rel_score = predictions
-                pred_entities.extend(batch_pred_entities)
-                pred_relations.extend(batch_pred_relations)
-                
-                # for i in range(doc_id, doc_id+self._args.eval_batch_size):
-                #     dataset._documents[i]._ent_score = ave_score[i-doc_id]
-                #     scores.append(ave_score[i-doc_id])
-                dataset._documents[doc_id]._ent_score = ave_ner_score
-                dataset._documents[doc_id]._rel_score = ave_rel_score
-                ner_scores.append(ave_ner_score)
-                rel_scores.append(ave_rel_score)
-                doc_id += self._args.eval_batch_size
-
-        predictions = prediction.store_predictions_semi(dataset.documents, pred_entities, pred_relations, self._args.unlabeled_predictions_path)
-        for pred, ner_score, rel_score in zip(predictions, ner_scores, rel_scores):
-            pred["ner_score"] = ner_score
-            pred["rel_score"] = rel_score
-        balancing.set_sample_weight_ner(predictions, ner_prob)
-        balancing.set_sample_weight_rel(predictions, rel_prob)
-        if unlabeled_type == "rel":
-            predictions = balancing.sample_data_by_rel(predictions)
-        else:
-            predictions = balancing.sample_data_by_ner(predictions)
-        cnt = min(cnt, len(predictions))
-        # predictions.sort(key=lambda x:x["score"], reverse=True)
-        predictions = predictions[:cnt]
-
-        with open(self._args.unlabeled_predictions_path, 'a+') as predictions_file:
-            for item in predictions:
-                print(json.dumps(item), file=predictions_file)
-
-        # filter empty instances
-        available_predict = []
-        for item in predictions:
-            if len(item["entities"]) > 0 :
-                available_predict.append(item)
-
-        return available_predict
-    
-    def _predict_unlabeled_balancing_ner_rel(self, model: torch.nn.Module, dataset: Dataset, input_reader: BaseInputReader, cnt, ner_prob, rel_prob, semi_cnt_control):
-        if semi_cnt_control:
-            cnt = cnt // 2
-        dataset.switch_mode(Dataset.EVAL_MODE)
-        data_loader = DataLoader(dataset, batch_size=self._args.eval_batch_size, shuffle=False, drop_last=False,
-                                 num_workers=self._args.sampling_processes, collate_fn=sampling.collate_fn_padding)
-
-        pred_entities = []
-        pred_relations = []
-
-        with torch.no_grad():
-            model.eval()
-
-            # iterate batches
-            doc_id = 0
-            scores = []
-            total = math.ceil(dataset.document_count / self._args.eval_batch_size)
-            for batch in tqdm(data_loader, total=total, desc='Predict'):
-                # move batch to selected device
-                batch = util.to_device(batch, self._device)
-                # for k in batch:
-                #     print("{}:{}".format(k, batch[k].shape))
-                # print("------------------")
-
-                # run model (forward pass)
-                result = model(encodings=batch['encodings'], context_masks=batch['context_masks'],
-                               entity_masks=batch['entity_masks'], entity_sizes=batch['entity_sizes'],
-                               entity_spans=batch['entity_spans'], entity_sample_masks=batch['entity_sample_masks'],
-                               inference=True)
-                entity_clf, rel_clf, rels = result
-                # print(entity_clf[:5])
-                # print(rel_clf[:5])
-
-                # convert predictions
-                predictions = prediction.convert_predictions_semi(entity_clf, rel_clf, rels,
-                                                                  batch, self._args.semi_rel_filter_threshold,
-                                                                  input_reader, ner_filter_threshold=self._args.semi_ner_filter_threshold)
-
-                batch_pred_entities, batch_pred_relations, ave_score = predictions
-                pred_entities.extend(batch_pred_entities)
-                pred_relations.extend(batch_pred_relations)
-                
-                # for i in range(doc_id, doc_id+self._args.eval_batch_size):
-                #     dataset._documents[i]._ent_score = ave_score[i-doc_id]
-                #     scores.append(ave_score[i-doc_id])
-                dataset._documents[doc_id]._ent_score = ave_score
-                scores.append(ave_score)
-                doc_id += self._args.eval_batch_size
-
-        predictions = prediction.store_predictions_semi(dataset.documents, pred_entities, pred_relations, self._args.unlabeled_predictions_path)
-        for pred, score in zip(predictions, scores):
-            pred["ner_score"] = score
-        balancing.set_sample_weight_ner(predictions, ner_prob)
-        balancing.set_sample_weight_rel(predictions, rel_prob)
-        predictions_rel = balancing.sample_data_by_rel(predictions)
-        predictions_ner = balancing.sample_data_by_ner(predictions)
-        cnt_ner = min(cnt, len(predictions_ner))
-        cnt_rel = min(cnt, len(predictions_rel))
-        # predictions.sort(key=lambda x:x["score"], reverse=True)
-        predictions_ner = predictions_ner[:cnt_ner]
-        predictions_rel = predictions_rel[:cnt_rel]
-        predictions = predictions_ner + predictions_rel
-
-        with open(self._args.unlabeled_predictions_path, 'a+') as predictions_file:
-            for item in predictions:
-                print(json.dumps(item), file=predictions_file)
-
-        # filter empty instances
-        available_predict = []
-        for item in predictions:
-            if len(item["entities"]) > 0 :
-                available_predict.append(item)
-
-        return available_predict
